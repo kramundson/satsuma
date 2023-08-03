@@ -1,0 +1,159 @@
+---
+title: "Beta binomial variant filter"
+author: KRA
+date: 2023-08-0
+output: html_notebook
+---
+
+Aim: Compute Tarone's Z statistic using read count information
+across all samples of a mutation panel. Follows [Tarone (1979)][1]
+See this [worked example] of Tarone Z and beta binomial maximum likelihood estimation with simulated data.
+A similar framework was applied by [Cagan et al. (2022)][3]
+
+# Packages:
+```{r}
+library(tidyverse)
+```
+
+# Functions:
+```{r}
+# code from https://rdrr.io/cran/stackoverflow/src/R/Tarone.R
+Tarone.test <- function(N, M) {
+  
+  #Check validity of inputs
+  if(!(all(N == as.integer(N)))) { stop("Error: Number of trials should be integers"); }
+  if(min(N) < 1) { stop("Error: Number of trials should be positive"); }
+  if(!(all(M == as.integer(M)))) { stop("Error: Count values should be integers"); }
+  if(min(M) < 0) { stop("Error: Count values cannot be negative"); }
+  if(any(M > N)) { stop("Error: Observed count value exceeds number of trials"); }
+  
+  #Set description of test and data
+  method      <- "Tarone's Z test";
+  data.name   <- paste0(deparse(substitute(M)), " successes from ", 
+                        deparse(substitute(N)), " trials");
+  
+  #Set null and alternative hypotheses
+  null.value  <- 0;
+  attr(null.value, "names") <- "dispersion parameter";
+  alternative <- "greater";
+  
+  #Calculate test statistics
+  estimate    <- sum(M)/sum(N);
+  attr(estimate, "names") <- "proportion parameter";
+  S           <- ifelse(estimate == 1, sum(N),
+                        sum((M - N*estimate)^2/(estimate*(1 - estimate))));
+  statistic   <- (S - sum(N))/sqrt(2*sum(N*(N-1))); 
+  attr(statistic, "names") <- "z";
+  
+  #Calculate p-value
+  p.value     <- 2*pnorm(-abs(statistic), 0, 1);
+  attr(p.value, "names") <- NULL;
+  
+  #Create htest object
+  TEST        <- list(method = method, data.name = data.name,
+                      null.value = null.value, alternative = alternative,
+                      estimate = estimate, statistic = statistic, p.value = p.value);
+  class(TEST) <- "htest";
+  TEST; 
+}
+```
+
+```{r}
+parse_vcf_for_tarone <- function(vcf_file) {
+
+  file_header <- system(paste0("grep '^#C' ", vcf_file), intern = T) %>% 
+    str_remove("^#") %>% 
+    str_split(pattern = "\t") %>% 
+    pluck(1)
+  
+  binomial_test <- read_tsv(vcf_file,
+                            col_names = file_header,
+                            comment = "#",
+                            na = ".",
+                            col_types = cols(REF = col_character(),
+                                             ALT = col_character()))
+  
+  ## define sample-specific columns
+  sample_vars <- colnames(binomial_test)[10:ncol(binomial_test)]
+  
+  ## define attributes of sample-specific columns
+  attributes <- unique(binomial_test$FORMAT) %>% 
+    str_split(pattern = ":") %>% 
+    pluck(1)
+
+  ## open sample-specific data, each to its own column
+  opened <- binomial_test %>% 
+    mutate(across(all_of(sample_vars), ~ list(tibble(col1 = .) %>% 
+                                    separate(col1, into = paste0(cur_column(), "_", attributes), sep = ":", convert = T)))) %>% 
+  unnest(cols = sample_vars)
+  
+  # alternate allele depth to new column
+  ao <- opened %>% 
+    select(CHROM, POS, matches("AO")) %>% 
+    pivot_longer(cols = matches("AO"), names_to = "bioid", values_to = "AO") %>% 
+    mutate(bioid = str_remove(bioid, "_AO"))
+
+  # total depth to new column
+  dp <- opened %>% 
+    select(CHROM, POS, matches("DP$")) %>% 
+    pivot_longer(cols = matches("DP$"), names_to = "bioid", values_to = "DP") %>% 
+    mutate(bioid = str_remove(bioid, "_DP"))
+
+  loc_test <- full_join(ao, dp)
+  
+  return(loc_test)
+}
+```
+
+# Quick start:
+```{r}
+N_trials <- c(30, 32, 40, 28, 29, 35, 30, 34, 31, 39) # count of trials, this is sample-specific DP from a VCF
+N_successes <- c( 9, 10, 22, 15,  8, 19, 16, 19, 15, 10) # count of successes, this is sample-specific AO or RO from VCF
+Tarone.test(N_trials, N_successes)
+```
+
+# Calculate Tarone Z from a multisample VCF with one site:
+
+## Example from a "bad" mutation: low but similar VAF across samples
+
+![bad mutation](~/Desktop/Comai_Lab/github-repositories/satsuma/screenshots/bad_mutation_ptg000001l_132627.png)
+
+```{r}
+loc_test <- parse_vcf_for_tarone("test_data/binomial-test-locus.vcf")
+head(loc_test)
+```
+
+```{r}
+# compute Tarone's Z
+Tarone.test(loc_test$DP, loc_test$AO)
+```
+
+> By this criterion, "bad" mutations do not show significanly greater VAF overdispersion
+than expected under a binomial null model. I remove these mutation calls from
+further analysis.
+
+## Example from a "good" mutation with high VAF in some but not all samples:
+
+![good mutation](~/Desktop/Comai_Lab/github-repositories/satsuma/screenshots/good_mutation_ptg000001l_132000.png)
+
+```{r}
+# parse VCF
+loc_test_2 <- parse_vcf_for_tarone("test_data/binomial-test-locus-2.vcf")
+head(loc_test_2)
+```
+
+```{r}
+# compute Tarone's Z
+Tarone.test(loc_test_2$DP, loc_test_2$AO)
+```
+
+> Compare the Z-score and p-value to the first test case.
+Here, we see significant VAF overdispersion relative to a
+binomial null model. I keep loci like this for downstream analysis.
+A suggested cutoff is a Z-score of > 3, but you may have to adjust
+this for your particular use case.
+
+# References:
+[1]: https://academic.oup.com/biomet/article-abstract/66/3/585/232596
+[2]: https://rpubs.com/cakapourani/beta-binomial
+[3]: https://www.nature.com/articles/s41586-022-04618-z#Sec8
