@@ -1,13 +1,13 @@
 ---
 title: "Beta binomial variant filter"
 author: KRA
-date: 2023-08-0
+date: 2023-08-03
 output: html_notebook
 ---
 
 Aim: Compute Tarone's Z statistic using read count information
 across all samples of a mutation panel. Follows [Tarone (1979)][1]
-See this [worked example] of Tarone Z and beta binomial maximum likelihood estimation with simulated data.
+See this [worked example][2] of Tarone Z and beta binomial maximum likelihood estimation with simulated data.
 A similar framework was applied by [Cagan et al. (2022)][3]
 
 # Packages:
@@ -152,6 +152,24 @@ Here, we see significant VAF overdispersion relative to a
 binomial null model. I keep loci like this for downstream analysis.
 A suggested cutoff is a Z-score of > 3, but you may have to adjust
 this for your particular use case.
+
+
+## Example of a sample-specific mutation that would be detected with MAPS:
+
+![sample specific mutation](~/Desktop/Comai_Lab/github-repositories/satsuma/screenshots/sample_specific_mutation_ptg000001l_356111.png)
+
+```{r}
+loc_test_3 <- parse_vcf_for_tarone("test_data/binomial-test-locus-3.vcf")
+head(loc_test_3)
+```
+
+```{r}
+Tarone.test(loc_test_3$DP, loc_test_3$AO)
+```
+
+> Sample-specific mutations also exhibit significantly greater dispersion
+compared to a binomial null model. Expect filtering for Tarone Z outliers
+will also catch sample-specific mutations.
 
 # References:
 [1]: https://academic.oup.com/biomet/article-abstract/66/3/585/232596
